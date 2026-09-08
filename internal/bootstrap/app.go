@@ -11,8 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/hibiken/asynq"
-	wshub "github.com/pipigendut/dating-backend/internal/websocket/hub"
 	"github.com/pipigendut/dating-backend/internal/delivery/http/middleware"
+	wshub "github.com/pipigendut/dating-backend/internal/websocket/hub"
 	"github.com/pipigendut/dating-backend/router"
 	v1 "github.com/pipigendut/dating-backend/router/api/v1"
 )
@@ -48,15 +48,12 @@ func NewApp() *App {
 
 	// Middleware setup
 	authMiddleware := middleware.AuthMiddleware()
-	
+
 	// Basic Auth Middleware for public-ish endpoints
 	basicAuthUser := os.Getenv("BASIC_AUTH_USER")
 	basicAuthPass := os.Getenv("BASIC_AUTH_PASS")
-	if basicAuthUser == "" {
-		basicAuthUser = "swipee-app"
-	}
-	if basicAuthPass == "" {
-		basicAuthPass = "swipee-secret-2026"
+	if basicAuthUser == "" || basicAuthPass == "" {
+		panic("BASIC_AUTH_USER and BASIC_AUTH_PASS environment variables are required")
 	}
 	basicAuthMiddleware := middleware.BasicAuthMiddleware(basicAuthUser, basicAuthPass)
 

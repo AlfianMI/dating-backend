@@ -6,7 +6,8 @@ app.exe
 *.dll
 *.so
 *.dylib
-
+lib/
+main
 
 # Go
 bin/

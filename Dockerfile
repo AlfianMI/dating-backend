@@ -1,56 +1,64 @@
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
-ARG TARGETOS TARGETARCH
+# ============================================================
+# Stage 1: Build
+# ============================================================
+FROM golang:1.26-bookworm AS builder
 
 WORKDIR /app
 
-# Enable workaround for Mac M1/M2 Rosetta crashes
-ENV GODEBUG=asyncpreemptoff=1
+ENV CGO_ENABLED=1
 
-# Install cross-compiler untuk CGO ke AMD64, serta tools lain
+# Install native build dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     bash \
-    gcc-x86-64-linux-gnu \
-    g++-x86-64-linux-gnu \
-    libc6-dev-amd64-cross \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy script downloader
-COPY scripts/setup_ml.sh ./scripts/setup_ml.sh
+# Copy dependency definitions first for better Docker layer caching
+COPY go.mod go.sum ./
 
-# Force setup_ml.sh untuk pakai arsitektur target, bukan host (karena host arm64 tapi butuh lib amd64)
-ENV FORCE_OS=Linux
-ENV FORCE_ARCH=x86_64
-RUN bash ./scripts/setup_ml.sh
+RUN go mod download
 
-# Alih-alih `go mod download` yang nge-crash di emulator,
-# kita copy langsung seluruh kode dan folder `vendor/` dari lokal Mac Anda.
+# Copy application source
 COPY . .
 
-# Build binary menggunakan cross compiler TANPA emulator
-RUN CGO_ENABLED=1 GOOS=$TARGETOS GOARCH=$TARGETARCH CC=x86_64-linux-gnu-gcc CXX=x86_64-linux-gnu-g++ go build -mod=vendor -o main ./cmd/app/main.go
+# Download ONNX Runtime + model
+ENV FORCE_OS=Linux
+ENV FORCE_ARCH=x86_64
 
-# ---------------------------------------------------
-# STAGE 2: Minimalist Runtime Image (Debian/Ubuntu)
-# ---------------------------------------------------
+RUN bash ./scripts/setup_ml.sh
+
+# Build application
+RUN go build -o main ./cmd/app/main.go
+
+
+# ============================================================
+# Stage 2: Runtime
+# ============================================================
 FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Dependency runtime ONNX
+# Runtime dependencies
 RUN apt-get update && apt-get install -y \
-  ca-certificates \
-  libgomp1 \
-  && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy hasil build
+# Application binary
 COPY --from=builder /app/main .
+
+# ONNX Runtime shared libraries
 COPY --from=builder /app/lib ./lib
+
+# ONNX model
 COPY --from=builder /app/models ./models
 
-# Set path library
-ENV LD_LIBRARY_PATH=/app/lib:$LD_LIBRARY_PATH
+# Runtime configuration
+ENV ONNX_MODEL_PATH=/app/models/arcface_resnet50.onnx
+ENV ONNXRUNTIME_SHARED_LIBRARY_PATH=/app/lib/libonnxruntime.so
 
 EXPOSE 8080
 

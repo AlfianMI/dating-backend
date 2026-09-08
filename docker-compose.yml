@@ -1,36 +1,89 @@
-version: '3.8'
-
 services:
   db:
     image: postgis/postgis:15-3.3
     container_name: dating_db
     environment:
-      POSTGRES_DB: dating_app
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "5432:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: dating_redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    restart: unless-stopped
 
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: dating_backend
     ports:
-      - "8080:8080"
+      - "${PORT}:8080"
     environment:
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=password
-      - DB_NAME=dating_app
-      - ONNXRUNTIME_SHARED_LIBRARY_PATH=/app/lib/libonnxruntime.so
-    env_file:
-      - .env
+      APP_ENV: ${APP_ENV}
+      BASE_URL: ${BASE_URL}
+
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER}
+      BASIC_AUTH_PASS: ${BASIC_AUTH_PASS}
+
+      PORT: 8080
+
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL}
+
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ACCESS_TOKEN_EXPIRY_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRY_MINUTES}
+      JWT_REFRESH_TOKEN_EXPIRY_DAYS: ${JWT_REFRESH_TOKEN_EXPIRY_DAYS}
+
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+
+      FACE_VERIFICATION_PROVIDER: ${FACE_VERIFICATION_PROVIDER}
+      ONNX_MODEL_PATH: /app/models/arcface_resnet50.onnx
+      ONNXRUNTIME_SHARED_LIBRARY_PATH: /app/lib/libonnxruntime.so
+
+      APPLE_TEAM_ID: ${APPLE_TEAM_ID}
+      ANDROID_SHA256_CERT: ${ANDROID_SHA256_CERT}
+
+      FIREBASE_SERVICE_ACCOUNT_PATH: ${FIREBASE_SERVICE_ACCOUNT_PATH}
+
+      GIF_PROVIDER: ${GIF_PROVIDER}
+      KLIPY_API_KEY: ${KLIPY_API_KEY}
+      KLIPY_SHOW_ADS: ${KLIPY_SHOW_ADS}
+
     depends_on:
-      - db
-    restart: always
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+    restart: unless-stopped
 
 volumes:
   postgres_data:

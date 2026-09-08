@@ -18,7 +18,7 @@ import (
 func getSecretKey() []byte {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "dev-insecure-secret-change-me" // acceptable only during local dev
+		panic("JWT_SECRET environment variable is required")
 	}
 	return []byte(secret)
 }
