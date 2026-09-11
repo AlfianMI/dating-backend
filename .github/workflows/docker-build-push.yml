@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Build and Deploy
 
 on:
   push:
@@ -13,9 +13,11 @@ env:
   AWS_REGION: ap-southeast-1
   AWS_ACCOUNT_ID: "992382472679"
   ECR_REPOSITORY: dating-backend
+  EC2_INSTANCE_ID: i-0be079ec9b1bce17d
+  APP_DIR: /opt/dating-backend
 
 jobs:
-  build-and-push:
+  build-push-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -43,4 +45,88 @@ jobs:
 
       - name: Push Docker image
         run: |
-          docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push \
+            ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      - name: Deploy to EC2 via SSM
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}"
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${AWS_REGION}" \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy dating-backend ${GITHUB_SHA}" \
+            --parameters commands="[
+              \"set -e\",
+              \"mkdir -p ${APP_DIR}/migrations\",
+              \"curl -fL ${REPO_URL}/docker-compose.prod.yml -o ${APP_DIR}/docker-compose.prod.yml\",
+              \"for f in 000001_initial_schema.down.sql 000001_initial_schema.up.sql 000002_create_advertisements_table.down.sql 000002_create_advertisements_table.up.sql 000003_add_gif_indexing.down.sql 000003_add_gif_indexing.up.sql; do curl -fL ${REPO_URL}/migrations/\\$f -o ${APP_DIR}/migrations/\\$f; done\",
+              \"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com\",
+              \"sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=${GITHUB_SHA}/' ${APP_DIR}/.env.production\",
+              \"docker compose -f ${APP_DIR}/docker-compose.prod.yml --env-file ${APP_DIR}/.env.production pull app\",
+              \"docker compose -f ${APP_DIR}/docker-compose.prod.yml --env-file ${APP_DIR}/.env.production up -d\",
+              \"sleep 10\",
+              \"curl -fsS http://127.0.0.1:8080/health\"
+            ]" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM Command ID: ${COMMAND_ID}"
+
+          for i in {1..30}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${AWS_REGION}" \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query 'Status' \
+              --output text)
+
+            echo "SSM status: ${STATUS}"
+
+            case "${STATUS}" in
+              Success)
+                break
+                ;;
+              Failed|Cancelled|TimedOut|Cancelling)
+                echo "Deployment failed."
+                aws ssm get-command-invocation \
+                  --region "${AWS_REGION}" \
+                  --command-id "${COMMAND_ID}" \
+                  --instance-id "${EC2_INSTANCE_ID}" \
+                  --query '[Status,StandardOutputContent,StandardErrorContent]' \
+                  --output json
+                exit 1
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          FINAL_STATUS=$(aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query 'Status' \
+            --output text)
+
+          if [ "${FINAL_STATUS}" != "Success" ]; then
+            echo "Deployment did not complete successfully."
+            aws ssm get-command-invocation \
+              --region "${AWS_REGION}" \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query '[Status,StandardOutputContent,StandardErrorContent]' \
+              --output json
+            exit 1
+          fi
+
+          aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query '[Status,StandardOutputContent,StandardErrorContent]' \
+            --output json
