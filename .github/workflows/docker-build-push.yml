@@ -53,25 +53,86 @@ jobs:
         run: |
           set -euo pipefail
 
-          REPO_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}"
+          DEPLOY_SCRIPT=$(cat <<EOF
+          set -euo pipefail
+
+          APP_DIR="/opt/dating-backend"
+          REPO_URL="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
+
+          TMP_DIR="\$(mktemp -d)"
+          trap 'rm -rf "\$TMP_DIR"' EXIT
+
+          echo "Downloading source archive for ${GITHUB_SHA}..."
+          curl -fL "\$REPO_URL" -o "\$TMP_DIR/source.tar.gz"
+
+          echo "Extracting source..."
+          tar -xzf "\$TMP_DIR/source.tar.gz" -C "\$TMP_DIR"
+
+          SOURCE_DIR="\$(find "\$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+
+          echo "Updating deployment files..."
+          cp "\$SOURCE_DIR/docker-compose.prod.yml" "\$APP_DIR/docker-compose.prod.yml"
+
+          rm -rf "\$APP_DIR/migrations"
+          cp -r "\$SOURCE_DIR/migrations" "\$APP_DIR/migrations"
+
+          echo "Logging in to ECR..."
+          aws ecr get-login-password \
+            --region "${AWS_REGION}" \
+            | docker login \
+                --username AWS \
+                --password-stdin \
+                "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          echo "Updating IMAGE_TAG..."
+          sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${GITHUB_SHA}/" "\$APP_DIR/.env.production"
+
+          cd "\$APP_DIR"
+
+          echo "Pulling application image..."
+          docker compose \
+            -f docker-compose.prod.yml \
+            --env-file .env.production \
+            pull app
+
+          echo "Starting database and Redis..."
+          docker compose \
+            -f docker-compose.prod.yml \
+            --env-file .env.production \
+            up -d db redis
+
+          echo "Running database migrations..."
+          docker compose \
+            -f docker-compose.prod.yml \
+            --env-file .env.production \
+            up --force-recreate migrate
+
+          echo "Starting application..."
+          docker compose \
+            -f docker-compose.prod.yml \
+            --env-file .env.production \
+            up -d app
+
+          echo "Waiting for application..."
+          sleep 10
+
+          echo "Running health check..."
+          curl -fsS http://127.0.0.1:8080/health
+
+          echo "Deployment successful."
+          EOF
+          )
+
+          PARAMETERS_JSON=$(jq -n \
+            --arg script "$DEPLOY_SCRIPT" \
+            '{commands: [$script]}')
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
             --instance-ids "${EC2_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy dating-backend ${GITHUB_SHA}" \
-            --parameters commands="[
-              \"set -e\",
-              \"mkdir -p ${APP_DIR}/migrations\",
-              \"curl -fL ${REPO_URL}/docker-compose.prod.yml -o ${APP_DIR}/docker-compose.prod.yml\",
-              \"for f in 000001_initial_schema.down.sql 000001_initial_schema.up.sql 000002_create_advertisements_table.down.sql 000002_create_advertisements_table.up.sql 000003_add_gif_indexing.down.sql 000003_add_gif_indexing.up.sql; do curl -fL ${REPO_URL}/migrations/\\$f -o ${APP_DIR}/migrations/\\$f; done\",
-              \"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com\",
-              \"sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=${GITHUB_SHA}/' ${APP_DIR}/.env.production\",
-              \"docker compose -f ${APP_DIR}/docker-compose.prod.yml --env-file ${APP_DIR}/.env.production pull app\",
-              \"docker compose -f ${APP_DIR}/docker-compose.prod.yml --env-file ${APP_DIR}/.env.production up -d\",
-              \"sleep 10\",
-              \"curl -fsS http://127.0.0.1:8080/health\"
-            ]" \
+            --parameters "$PARAMETERS_JSON" \
             --query 'Command.CommandId' \
             --output text)
 
@@ -93,12 +154,14 @@ jobs:
                 ;;
               Failed|Cancelled|TimedOut|Cancelling)
                 echo "Deployment failed."
+
                 aws ssm get-command-invocation \
                   --region "${AWS_REGION}" \
                   --command-id "${COMMAND_ID}" \
                   --instance-id "${EC2_INSTANCE_ID}" \
                   --query '[Status,StandardOutputContent,StandardErrorContent]' \
                   --output json
+
                 exit 1
                 ;;
             esac
@@ -115,12 +178,14 @@ jobs:
 
           if [ "${FINAL_STATUS}" != "Success" ]; then
             echo "Deployment did not complete successfully."
+
             aws ssm get-command-invocation \
               --region "${AWS_REGION}" \
               --command-id "${COMMAND_ID}" \
               --instance-id "${EC2_INSTANCE_ID}" \
               --query '[Status,StandardOutputContent,StandardErrorContent]' \
               --output json
+
             exit 1
           fi
 
