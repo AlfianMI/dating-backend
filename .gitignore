@@ -8,6 +8,8 @@ app.exe
 *.dylib
 lib/
 main
+certbot/conf/
+certbot/www/
 
 # Go
 bin/

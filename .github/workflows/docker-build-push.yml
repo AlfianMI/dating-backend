@@ -76,6 +76,11 @@ jobs:
           rm -rf "\$APP_DIR/migrations"
           cp -r "\$SOURCE_DIR/migrations" "\$APP_DIR/migrations"
 
+          rm -rf "\$APP_DIR/nginx"
+          cp -r "\$SOURCE_DIR/nginx" "\$APP_DIR/nginx"
+
+          mkdir -p "\$APP_DIR/certbot/www"
+
           echo "Logging in to ECR..."
           aws ecr get-login-password \
             --region "${AWS_REGION}" \
@@ -107,11 +112,11 @@ jobs:
             --env-file .env.production \
             up --force-recreate migrate
 
-          echo "Starting application..."
+          echo "Starting application and Nginx..."
           docker compose \
             -f docker-compose.prod.yml \
             --env-file .env.production \
-            up -d app
+            up -d app nginx
 
           echo "Waiting for application..."
           sleep 10
