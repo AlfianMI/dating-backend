@@ -20,7 +20,7 @@ func NewClient(serviceAccountPath string) (*Client, error) {
 		return nil, fmt.Errorf("FIREBAR_SERVICE_ACCOUNT_PATH is required for FCM")
 	}
 
-	opt := option.WithCredentialsFile(serviceAccountPath)
+	opt := option.WithAuthCredentialsFile(option.ServiceAccount, serviceAccountPath)
 	app, err := firebase.NewApp(context.Background(), nil, opt)
 	if err != nil {
 		return nil, fmt.Errorf("error initializing firebase app: %v", err)

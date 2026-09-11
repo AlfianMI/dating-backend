@@ -9,7 +9,7 @@ ARG TARGETOS TARGETARCH
 WORKDIR /app
 
 # Install dependensi khusus untuk Cross-compile CGO dari Mac ARM ke Linux AMD64
-RUN apt-get update && apt-get install -y \
+RUN apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     bash \

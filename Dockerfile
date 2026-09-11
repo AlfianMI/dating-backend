@@ -8,7 +8,7 @@ WORKDIR /app
 ENV CGO_ENABLED=1
 
 # Install native build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     bash \
@@ -42,7 +42,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Runtime dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
@@ -61,5 +61,7 @@ ENV ONNX_MODEL_PATH=/app/models/arcface_resnet50.onnx
 ENV ONNXRUNTIME_SHARED_LIBRARY_PATH=/app/lib/libonnxruntime.so
 
 EXPOSE 8080
+
+USER 10001
 
 CMD ["./main"]
