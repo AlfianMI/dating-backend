@@ -1,4 +1,4 @@
-name: Build and Deploy
+name: CI/CD Pipeline
 
 on:
   push:
@@ -21,8 +21,73 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ============================================================
+      # SOURCE
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      # ============================================================
+      # GO QUALITY
+      # ============================================================
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go tests
+        run: |
+          go test ./...
+
+      - name: Run Go lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+      # ============================================================
+      # SECURITY - SOURCE
+      # ============================================================
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      # ============================================================
+      # DOCKER BUILD
+      # ============================================================
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }} \
+            .
+
+      # ============================================================
+      # SECURITY - CONTAINER IMAGE
+      # ============================================================
+
+      - name: Trivy Docker image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+
+      # ============================================================
+      # AWS AUTHENTICATION
+      # ============================================================
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -32,21 +97,23 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
 
+      # ============================================================
+      # ECR
+      # ============================================================
+
       - name: Login to Amazon ECR
         uses: docker/login-action@v4
         with:
           registry: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
 
-      - name: Build Docker image
-        run: |
-          docker build \
-            -t ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }} \
-            .
-
       - name: Push Docker image
         run: |
           docker push \
             ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      # ============================================================
+      # DEPLOY TO EC2 VIA SSM
+      # ============================================================
 
       - name: Deploy to EC2 via SSM
         shell: bash
@@ -71,13 +138,17 @@ jobs:
           SOURCE_DIR="\$(find "\$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 
           echo "Updating deployment files..."
-          cp "\$SOURCE_DIR/docker-compose.prod.yml" "\$APP_DIR/docker-compose.prod.yml"
+
+          cp "\$SOURCE_DIR/docker-compose.prod.yml" \
+             "\$APP_DIR/docker-compose.prod.yml"
 
           rm -rf "\$APP_DIR/migrations"
-          cp -r "\$SOURCE_DIR/migrations" "\$APP_DIR/migrations"
+          cp -r "\$SOURCE_DIR/migrations" \
+                "\$APP_DIR/migrations"
 
           rm -rf "\$APP_DIR/nginx"
-          cp -r "\$SOURCE_DIR/nginx" "\$APP_DIR/nginx"
+          cp -r "\$SOURCE_DIR/nginx" \
+                "\$APP_DIR/nginx"
 
           mkdir -p "\$APP_DIR/certbot/www"
 
@@ -99,6 +170,7 @@ jobs:
           systemctl enable --now dating-certbot-renew.timer
 
           echo "Logging in to ECR..."
+
           aws ecr get-login-password \
             --region "${AWS_REGION}" \
             | docker login \
@@ -107,29 +179,35 @@ jobs:
                 "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
           echo "Updating IMAGE_TAG..."
-          sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${GITHUB_SHA}/" "\$APP_DIR/.env.production"
+
+          sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${GITHUB_SHA}/" \
+            "\$APP_DIR/.env.production"
 
           cd "\$APP_DIR"
 
           echo "Pulling application image..."
+
           docker compose \
             -f docker-compose.prod.yml \
             --env-file .env.production \
             pull app
 
           echo "Starting database and Redis..."
+
           docker compose \
             -f docker-compose.prod.yml \
             --env-file .env.production \
             up -d db redis
 
           echo "Running database migrations..."
+
           docker compose \
             -f docker-compose.prod.yml \
             --env-file .env.production \
             up --force-recreate migrate
 
           echo "Starting application and Nginx..."
+
           docker compose \
             -f docker-compose.prod.yml \
             --env-file .env.production \
@@ -138,9 +216,12 @@ jobs:
           echo "Waiting for application..."
           sleep 10
 
-          echo "Running health check..."
-          curl -fsS http://127.0.0.1:8080/health
+          echo "Running application health check..."
 
+          curl -fsS \
+            http://127.0.0.1:8080/health
+
+          echo
           echo "Deployment successful."
           EOF
           )
@@ -161,6 +242,7 @@ jobs:
           echo "SSM Command ID: ${COMMAND_ID}"
 
           for i in {1..30}; do
+
             STATUS=$(aws ssm get-command-invocation \
               --region "${AWS_REGION}" \
               --command-id "${COMMAND_ID}" \
@@ -174,7 +256,9 @@ jobs:
               Success)
                 break
                 ;;
+
               Failed|Cancelled|TimedOut|Cancelling)
+
                 echo "Deployment failed."
 
                 aws ssm get-command-invocation \
@@ -199,6 +283,7 @@ jobs:
             --output text)
 
           if [ "${FINAL_STATUS}" != "Success" ]; then
+
             echo "Deployment did not complete successfully."
 
             aws ssm get-command-invocation \
