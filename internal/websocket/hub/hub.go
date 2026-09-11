@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"sync"
 
 	"github.com/google/uuid"
@@ -37,7 +38,9 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Lock()
 			h.clients[client.userID] = client
 			h.mu.Unlock()
-			h.redisRepo.SetUserOnline(ctx, client.userID)
+			if err := h.redisRepo.SetUserOnline(ctx, client.userID); err != nil {
+				log.Printf("[WebSocket] failed to set user %s online: %v", client.userID, err)
+			}
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -46,7 +49,9 @@ func (h *Hub) Run(ctx context.Context) {
 				close(client.send)
 			}
 			h.mu.Unlock()
-			h.redisRepo.SetUserOffline(ctx, client.userID)
+			if err := h.redisRepo.SetUserOffline(ctx, client.userID); err != nil {
+				log.Printf("[WebSocket] failed to set user %s offline: %v", client.userID, err)
+			}
 
 		case <-ctx.Done():
 			return
@@ -81,7 +86,11 @@ func (h *Hub) DisconnectUser(userID uuid.UUID) {
 // broadcasts incoming events to locally connected clients
 func (h *Hub) ListenToRedisPubSub(ctx context.Context, rdb *redis.Client) {
 	pubsub := rdb.Subscribe(ctx, "chat:events")
-	defer pubsub.Close()
+	defer func() {
+		if err := pubsub.Close(); err != nil {
+			log.Printf("[WebSocket] failed to close Redis pubsub: %v", err)
+		}
+	}()
 
 	ch := pubsub.Channel()
 	for msg := range ch {

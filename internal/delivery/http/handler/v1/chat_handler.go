@@ -3,6 +3,7 @@ package v1
 import (
 	dtov1 "github.com/pipigendut/dating-backend/internal/delivery/http/dto/v1"
 
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -98,7 +99,18 @@ func (h *ChatHandler) GetMessages(c *gin.Context) {
 	}
 
 	if offset == 0 && len(msgs) > 0 {
-		h.chatService.SendReadReceipt(c.Request.Context(), userID, convID, msgs[0].ID)
+		if err := h.chatService.SendReadReceipt(
+			c.Request.Context(),
+			userID,
+			convID,
+			msgs[0].ID,
+		); err != nil {
+			log.Printf(
+				"failed to send read receipt for conversation %s: %v",
+				convID,
+				err,
+			)
+		}
 	}
 
 	resp := make([]dtov1.MessageResponse, len(msgs))

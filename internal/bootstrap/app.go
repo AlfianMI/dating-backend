@@ -122,12 +122,15 @@ func (a *App) Run() {
 	}
 
 	if a.AsynqClient != nil {
-		a.AsynqClient.Close()
+		if err := a.AsynqClient.Close(); err != nil {
+			log.Printf("failed to close Asynq client: %v", err)
+		}
 	}
 
-	// Close ML Provider if applicable
 	if a.Infra.MLProvider != nil {
-		a.Infra.MLProvider.Close()
+		if err := a.Infra.MLProvider.Close(); err != nil {
+			log.Printf("failed to close ML provider: %v", err)
+		}
 	}
 
 	// Context with timeout to give HTTP server time to finish active requests

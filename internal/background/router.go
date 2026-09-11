@@ -17,7 +17,7 @@ type BaseJobPayload struct {
 }
 
 type JobRouter struct {
-	mux    *asynq.ServeMux
+	mux     *asynq.ServeMux
 	jobRepo repository.JobRepository
 }
 
@@ -44,7 +44,7 @@ func (r *JobRouter) trackingMiddleware(h asynq.Handler) asynq.Handler {
 		// 1. Extract internal JobID from payload
 		var basePayload BaseJobPayload
 		if err := json.Unmarshal(t.Payload(), &basePayload); err != nil {
-			log.Printf("Failed to unmarshal base payload for task %s", t.Type())
+			log.Printf("Failed to unmarshal base payload for task %s: %v", t.Type(), err)
 			return h.ProcessTask(ctx, t) // Not tracked by DB
 		}
 
@@ -54,8 +54,18 @@ func (r *JobRouter) trackingMiddleware(h asynq.Handler) asynq.Handler {
 		}
 
 		// 2. Mark as processing and increment attempt
-		r.jobRepo.IncrementJobAttempt(context.Background(), jobID)
-		r.jobRepo.UpdateJobStatus(context.Background(), jobID, entities.JobStatusProcessing, nil)
+		if err := r.jobRepo.IncrementJobAttempt(ctx, jobID); err != nil {
+			return err
+		}
+
+		if err := r.jobRepo.UpdateJobStatus(
+			ctx,
+			jobID,
+			entities.JobStatusProcessing,
+			nil,
+		); err != nil {
+			return err
+		}
 
 		// 3. Execute the actual handler module
 		handlerErr := h.ProcessTask(ctx, t)
@@ -63,12 +73,29 @@ func (r *JobRouter) trackingMiddleware(h asynq.Handler) asynq.Handler {
 		// 4. Handle Result
 		if handlerErr != nil {
 			errMsg := handlerErr.Error()
-			r.jobRepo.UpdateJobStatus(context.Background(), jobID, entities.JobStatusFailed, &errMsg)
+
+			if err := r.jobRepo.UpdateJobStatus(
+				ctx,
+				jobID,
+				entities.JobStatusFailed,
+				&errMsg,
+			); err != nil {
+				log.Printf("Failed to update job %s to failed: %v", jobID, err)
+			}
+
 			return handlerErr // Return error to Asynq so it retries
 		}
 
 		// 5. Success
-		r.jobRepo.UpdateJobStatus(context.Background(), jobID, entities.JobStatusCompleted, nil)
+		if err := r.jobRepo.UpdateJobStatus(
+			ctx,
+			jobID,
+			entities.JobStatusCompleted,
+			nil,
+		); err != nil {
+			return err
+		}
+
 		return nil
 	})
 }

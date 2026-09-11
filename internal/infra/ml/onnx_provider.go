@@ -1,14 +1,15 @@
 package ml
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"image"
 	"image/jpeg"
 	_ "image/png"
+	"log"
 	"math"
 	"os"
-	"bytes"
 
 	ort "github.com/yalue/onnxruntime_go"
 	"golang.org/x/image/draw"
@@ -99,18 +100,18 @@ func (p *ONNXProvider) extractEmbedding(ctx context.Context, imgBytes []byte) ([
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	
+
 	size := width
 	if height < size {
 		size = height
 	}
-	
-	x0 := bounds.Min.X + (width - size) / 2
-	y0 := bounds.Min.Y + (height - size) / 2
-	
+
+	x0 := bounds.Min.X + (width-size)/2
+	y0 := bounds.Min.Y + (height-size)/2
+
 	// Create a square rect representing the center
 	cropRect := image.Rect(x0, y0, x0+size, y0+size)
-	
+
 	// Draw the cropped portion to a new square image
 	cropped := image.NewRGBA(image.Rect(0, 0, size, size))
 	draw.Draw(cropped, cropped.Bounds(), img, cropRect.Min, draw.Src)
@@ -128,7 +129,11 @@ func (p *ONNXProvider) extractEmbedding(ctx context.Context, imgBytes []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("create input tensor: %w", err)
 	}
-	defer inputTensor.Destroy()
+	defer func() {
+		if err := inputTensor.Destroy(); err != nil {
+			log.Printf("failed to destroy input tensor: %v", err)
+		}
+	}()
 
 	outputShape := ort.NewShape(1, arcfaceEmbeddingSize)
 	outputData := make([]float32, arcfaceEmbeddingSize)
@@ -136,12 +141,16 @@ func (p *ONNXProvider) extractEmbedding(ctx context.Context, imgBytes []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("create output tensor: %w", err)
 	}
-	defer outputTensor.Destroy()
+	defer func() {
+		if err := outputTensor.Destroy(); err != nil {
+			log.Printf("failed to destroy output tensor: %v", err)
+		}
+	}()
 
 	session, err := ort.NewAdvancedSession(
 		p.modelPath,
-		[]string{"input.1"},   // ArcFace ResNet50 input name
-		[]string{"683"},        // ArcFace ResNet50 output name
+		[]string{"input.1"}, // ArcFace ResNet50 input name
+		[]string{"683"},     // ArcFace ResNet50 output name
 		[]ort.ArbitraryTensor{inputTensor},
 		[]ort.ArbitraryTensor{outputTensor},
 		nil,
@@ -149,7 +158,11 @@ func (p *ONNXProvider) extractEmbedding(ctx context.Context, imgBytes []byte) ([
 	if err != nil {
 		return nil, fmt.Errorf("create ONNX session: %w", err)
 	}
-	defer session.Destroy()
+	defer func() {
+		if err := session.Destroy(); err != nil {
+			log.Printf("failed to destroy ONNX session: %v", err)
+		}
+	}()
 
 	if err := session.Run(); err != nil {
 		return nil, fmt.Errorf("ONNX inference failed: %w", err)

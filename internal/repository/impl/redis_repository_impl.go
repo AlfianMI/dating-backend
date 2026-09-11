@@ -139,5 +139,14 @@ func (r *redisRepository) Del(ctx context.Context, key string) error {
 }
 
 func (r *redisRepository) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
-	return r.client.SetNX(ctx, key, value, expiration).Result()
+	result, err := r.client.SetArgs(ctx, key, value, redis.SetArgs{
+		Mode: "NX",
+		TTL:  expiration,
+	}).Result()
+
+	if err != nil {
+		return false, err
+	}
+
+	return result == "OK", nil
 }

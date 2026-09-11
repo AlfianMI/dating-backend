@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	wshub "github.com/pipigendut/dating-backend/internal/websocket/hub"
-	wsmsg "github.com/pipigendut/dating-backend/internal/websocket/message"
 	"github.com/pipigendut/dating-backend/internal/entities"
 	"github.com/pipigendut/dating-backend/internal/repository"
+	wshub "github.com/pipigendut/dating-backend/internal/websocket/hub"
+	wsmsg "github.com/pipigendut/dating-backend/internal/websocket/message"
 )
+
 type ChatService interface {
 	SendMessage(ctx context.Context, senderID, conversationID uuid.UUID, messageType entities.MessageType, content string, metadata *entities.MessageMetadata) error
 	SendTypingEvent(ctx context.Context, userID, conversationID uuid.UUID, isTyping bool) error
@@ -25,25 +26,23 @@ type ChatService interface {
 	GetConversationByMatchID(ctx context.Context, matchID uuid.UUID) (*entities.Conversation, error)
 }
 
-
-
 type chatService struct {
-	repo         repository.ChatRepository
-	userRepo     repository.UserRepository
-	swipeRepo    repository.SwipeRepository
-	redisRepo    repository.RedisRepository
-	notifySvc    NotificationService
-	hub          *wshub.Hub
+	repo      repository.ChatRepository
+	userRepo  repository.UserRepository
+	swipeRepo repository.SwipeRepository
+	redisRepo repository.RedisRepository
+	notifySvc NotificationService
+	hub       *wshub.Hub
 }
 
 func NewChatService(repo repository.ChatRepository, userRepo repository.UserRepository, swipeRepo repository.SwipeRepository, redisRepo repository.RedisRepository, notifySvc NotificationService, hub *wshub.Hub) ChatService {
 	return &chatService{
-		repo:         repo,
-		userRepo:     userRepo,
-		swipeRepo:    swipeRepo,
-		redisRepo:    redisRepo,
-		notifySvc:    notifySvc,
-		hub:          hub,
+		repo:      repo,
+		userRepo:  userRepo,
+		swipeRepo: swipeRepo,
+		redisRepo: redisRepo,
+		notifySvc: notifySvc,
+		hub:       hub,
 	}
 }
 
@@ -65,15 +64,28 @@ func (s *chatService) SendMessage(ctx context.Context, senderID, conversationID 
 	}
 
 	// 2. Update conversation last message
-	s.repo.UpdateConversationLastMessage(ctx, conversationID, msg.ID, time.Now())
+	if err := s.repo.UpdateConversationLastMessage(
+		ctx,
+		conversationID,
+		msg.ID,
+		time.Now(),
+	); err != nil {
+		return err
+	}
 
 	// 3. Find participants to notify (WebSocket)
 	conv, _ := s.repo.GetConversationByID(ctx, conversationID)
-	
+
 	// 4. Redis: Increment unread count for todos participants except sender
 	for _, p := range conv.Participants {
 		if p.UserID != senderID {
-			s.redisRepo.IncrementUnreadCount(ctx, p.UserID, conversationID)
+			if _, err := s.redisRepo.IncrementUnreadCount(ctx, p.UserID, conversationID); err != nil {
+				log.Printf(
+					"[ChatService] Failed to increment unread count for user %s: %v",
+					p.UserID,
+					err,
+				)
+			}
 		}
 	}
 
@@ -93,13 +105,23 @@ func (s *chatService) SendMessage(ctx context.Context, senderID, conversationID 
 
 	for _, p := range conv.Participants {
 		// Broadcast to everyone (including sender for tab syncing)
-		s.redisRepo.PublishEvent(ctx, "chat:events", struct {
-			TargetUserID uuid.UUID       `json:"target_user_id"`
-			Event        wsmsg.WSEvent   `json:"event"`
-		}{
-			TargetUserID: p.UserID,
-			Event:        event,
-		})
+		if err := s.redisRepo.PublishEvent(
+			ctx,
+			"chat:events",
+			struct {
+				TargetUserID uuid.UUID     `json:"target_user_id"`
+				Event        wsmsg.WSEvent `json:"event"`
+			}{
+				TargetUserID: p.UserID,
+				Event:        event,
+			},
+		); err != nil {
+			log.Printf(
+				"[ChatService] Failed to publish chat event for user %s: %v",
+				p.UserID,
+				err,
+			)
+		}
 		s.hub.BroadcastEvent(event, p.UserID)
 	}
 
@@ -112,10 +134,15 @@ func (s *chatService) SendMessage(ctx context.Context, senderID, conversationID 
 }
 
 func (s *chatService) SendTypingEvent(ctx context.Context, userID, conversationID uuid.UUID, isTyping bool) error {
-	s.redisRepo.SetTyping(ctx, conversationID, userID, isTyping)
+	if err := s.redisRepo.SetTyping(ctx, conversationID, userID, isTyping); err != nil {
+		log.Printf(
+			"[ChatService] Failed to set typing status: %v",
+			err,
+		)
+	}
 
 	conv, _ := s.repo.GetConversationByID(ctx, conversationID)
-	
+
 	eventType := wsmsg.EventTypingStart
 	if !isTyping {
 		eventType = wsmsg.EventTypingStop
@@ -132,13 +159,23 @@ func (s *chatService) SendTypingEvent(ctx context.Context, userID, conversationI
 
 	for _, p := range conv.Participants {
 		if p.UserID != userID {
-			s.redisRepo.PublishEvent(ctx, "chat:events", struct {
-				TargetUserID uuid.UUID       `json:"target_user_id"`
-				Event        wsmsg.WSEvent   `json:"event"`
-			}{
-				TargetUserID: p.UserID,
-				Event:        event,
-			})
+			if err := s.redisRepo.PublishEvent(
+				ctx,
+				"chat:events",
+				struct {
+					TargetUserID uuid.UUID     `json:"target_user_id"`
+					Event        wsmsg.WSEvent `json:"event"`
+				}{
+					TargetUserID: p.UserID,
+					Event:        event,
+				},
+			); err != nil {
+				log.Printf(
+					"[ChatService] Failed to publish typing event for user %s: %v",
+					p.UserID,
+					err,
+				)
+			}
 			s.hub.BroadcastEvent(event, p.UserID)
 		}
 	}
@@ -151,10 +188,15 @@ func (s *chatService) SendReadReceipt(ctx context.Context, userID, conversationI
 		return err
 	}
 
-	s.redisRepo.ResetUnreadCount(ctx, userID, conversationID)
+	if err := s.redisRepo.ResetUnreadCount(ctx, userID, conversationID); err != nil {
+		log.Printf(
+			"[ChatService] Failed to reset unread count: %v",
+			err,
+		)
+	}
 
 	conv, _ := s.repo.GetConversationByID(ctx, conversationID)
-	
+
 	event := wsmsg.WSEvent{
 		Type:           wsmsg.EventMessageRead,
 		ConversationID: &conversationID,
@@ -167,13 +209,23 @@ func (s *chatService) SendReadReceipt(ctx context.Context, userID, conversationI
 
 	for _, p := range conv.Participants {
 		if p.UserID != userID {
-			s.redisRepo.PublishEvent(ctx, "chat:events", struct {
-				TargetUserID uuid.UUID       `json:"target_user_id"`
-				Event        wsmsg.WSEvent   `json:"event"`
-			}{
-				TargetUserID: p.UserID,
-				Event:        event,
-			})
+			if err := s.redisRepo.PublishEvent(
+				ctx,
+				"chat:events",
+				struct {
+					TargetUserID uuid.UUID     `json:"target_user_id"`
+					Event        wsmsg.WSEvent `json:"event"`
+				}{
+					TargetUserID: p.UserID,
+					Event:        event,
+				},
+			); err != nil {
+				log.Printf(
+					"[ChatService] Failed to publish read receipt event for user %s: %v",
+					p.UserID,
+					err,
+				)
+			}
 			s.hub.BroadcastEvent(event, p.UserID)
 		}
 	}

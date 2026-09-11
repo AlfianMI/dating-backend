@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -90,7 +91,12 @@ func (k *KlipyProvider) fetch(ctx context.Context, reqURL string) ([]gif.Gif, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch from klipy: %w", err)
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("failed to close Klipy response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("klipy returned status %d", resp.StatusCode)

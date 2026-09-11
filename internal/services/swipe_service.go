@@ -568,7 +568,6 @@ func (s *swipeService) GetSwipeGroupCandidates(ctx context.Context, userID uuid.
 	return candidates, nil
 }
 
-
 func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEntityID, swipedEntityID uuid.UUID, direction entities.SwipeDirection) (*entities.Match, *entities.Entity, error) {
 	// 1. Verify user has permission to swipe as this entity
 	var swiperEnt entities.Entity
@@ -619,7 +618,7 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 				return err
 			}
 			if !success {
-				return errors.New("Insufficient crush balance")
+				return errors.New("insufficient crush balance")
 			}
 		} else if !user.IsPremium {
 			// Handle Daily Swipe Limit for Free Users
@@ -628,7 +627,7 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 				maxFreeSwipes = s.config.GetInt("max_free_swipes_per_day", 10)
 			}
 			if user.SwipeCountToday >= maxFreeSwipes {
-				return errors.New("Daily swipe limit reached")
+				return errors.New("daily swipe limit reached")
 			}
 			user.SwipeCountToday++
 		}
@@ -658,11 +657,18 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 		}
 
 		// 3. Check for mutual match
-		if direction == entities.SwipeDirectionLike || direction == entities.SwipeDirectionCrush {
+		switch direction {
+		case entities.SwipeDirectionLike, entities.SwipeDirectionCrush:
 			var reverseSwipe entities.Swipe
-			err := tx.Where("swiper_entity_id = ? AND swiped_entity_id = ? AND direction IN ?",
-				swipedEntityID, swiperEntityID, []entities.SwipeDirection{entities.SwipeDirectionLike, entities.SwipeDirectionCrush}).
-				First(&reverseSwipe).Error
+			err := tx.Where(
+				"swiper_entity_id = ? AND swiped_entity_id = ? AND direction IN ?",
+				swipedEntityID,
+				swiperEntityID,
+				[]entities.SwipeDirection{
+					entities.SwipeDirectionLike,
+					entities.SwipeDirectionCrush,
+				},
+			).First(&reverseSwipe).Error
 
 			if err == nil {
 				// MATCH OCCURS
@@ -725,8 +731,13 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 					return nil
 				}
 
-				addEntityParticipants(id1)
-				addEntityParticipants(id2)
+				if err := addEntityParticipants(id1); err != nil {
+					return err
+				}
+
+				if err := addEntityParticipants(id2); err != nil {
+					return err
+				}
 
 				if len(participants) > 0 {
 					if err := tx.Create(&participants).Error; err != nil {
@@ -737,7 +748,8 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 				// Fetch matched entity for response with preloaded data
 				var targetEnt entities.Entity
 				if err := tx.First(&targetEnt, "id = ?", swipedEntityID).Error; err == nil {
-					if targetEnt.Type == entities.EntityTypeUser {
+					switch targetEnt.Type {
+					case entities.EntityTypeUser:
 						var u entities.User
 						if err := tx.Preload("Gender").
 							Preload("RelationshipType").
@@ -750,7 +762,8 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 							First(&u, "entity_id = ?", targetEnt.ID).Error; err == nil {
 							targetEnt.User = &u
 						}
-					} else if targetEnt.Type == entities.EntityTypeGroup {
+
+					case entities.EntityTypeGroup:
 						var g entities.Group
 						if err := tx.Preload("Members.User.Gender").
 							Preload("Members.User.Photos").
@@ -758,12 +771,15 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 							targetEnt.Group = &g
 						}
 					}
+
 					matchedEntity = &targetEnt
+
 				}
 			} else if err != gorm.ErrRecordNotFound {
 				return err
 			}
-		} else if direction == entities.SwipeDirectionPass {
+
+		case entities.SwipeDirectionPass:
 			// If we pass, and they liked us, clear their like record
 			// This effectively removes them from our 'Likes You' list
 			if err := tx.Where("swiper_entity_id = ? AND swiped_entity_id = ? AND direction IN ?",
@@ -796,9 +812,9 @@ func (s *swipeService) CreateSwipe(ctx context.Context, swiperUserID, swiperEnti
 }
 
 type IncomingLike struct {
-	Entity    entities.Entity
-	User      *entities.User
-	Group     *entities.Group
+	Entity         entities.Entity
+	User           *entities.User
+	Group          *entities.Group
 	IsCrush        bool
 	IsBoosted      bool
 	CreatedAt      time.Time
@@ -847,13 +863,19 @@ func (s *swipeService) GetIncomingLikes(ctx context.Context, userID uuid.UUID, l
 				TargetEntityID: sw.SwipedEntityID,
 			}
 
-			if ent.Type == entities.EntityTypeUser {
+			switch ent.Type {
+			case entities.EntityTypeUser:
 				var u entities.User
-				if err := s.db.Preload("Gender").Preload("RelationshipType").Preload("InterestedGenders").Preload("Interests").Preload("Photos").
+				if err := s.db.Preload("Gender").
+					Preload("RelationshipType").
+					Preload("InterestedGenders").
+					Preload("Interests").
+					Preload("Photos").
 					First(&u, "entity_id = ?", ent.ID).Error; err == nil {
 					item.User = &u
 				}
-			} else if ent.Type == entities.EntityTypeGroup {
+
+			case entities.EntityTypeGroup:
 				var g entities.Group
 				if err := s.db.
 					Preload("Members").
@@ -876,10 +898,10 @@ func (s *swipeService) GetIncomingLikes(ctx context.Context, userID uuid.UUID, l
 }
 
 type SentLike struct {
-	Entity    entities.Entity
-	User      *entities.User
-	Group     *entities.Group
-	IsCrush   bool
+	Entity         entities.Entity
+	User           *entities.User
+	Group          *entities.Group
+	IsCrush        bool
 	IsBoosted      bool
 	CreatedAt      time.Time
 	ExpiresAt      time.Time
@@ -909,13 +931,19 @@ func (s *swipeService) GetLikesSent(ctx context.Context, userID uuid.UUID, limit
 				SwiperEntityID: sw.SwiperEntityID,
 			}
 
-			if ent.Type == entities.EntityTypeUser {
+			switch ent.Type {
+			case entities.EntityTypeUser:
 				var u entities.User
-				if err := s.db.Preload("Gender").Preload("RelationshipType").Preload("InterestedGenders").Preload("Interests").Preload("Photos").
+				if err := s.db.Preload("Gender").
+					Preload("RelationshipType").
+					Preload("InterestedGenders").
+					Preload("Interests").
+					Preload("Photos").
 					First(&u, "entity_id = ?", ent.ID).Error; err == nil {
 					item.User = &u
 				}
-			} else if ent.Type == entities.EntityTypeGroup {
+
+			case entities.EntityTypeGroup:
 				var g entities.Group
 				if err := s.db.
 					Preload("Members").
@@ -925,7 +953,9 @@ func (s *swipeService) GetLikesSent(ctx context.Context, userID uuid.UUID, limit
 					Preload("Members.User.InterestedGenders").
 					Preload("Members.User.Interests").
 					Preload("Members.User.Languages").
-					Preload("Members.User.Photos", func(db *gorm.DB) *gorm.DB { return db.Order("is_main DESC, created_at ASC") }).
+					Preload("Members.User.Photos", func(db *gorm.DB) *gorm.DB {
+						return db.Order("is_main DESC, created_at ASC")
+					}).
 					First(&g, "entity_id = ?", ent.ID).Error; err == nil {
 					item.Group = &g
 				}

@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
@@ -14,7 +15,8 @@ import (
 	"github.com/pipigendut/dating-backend/internal/services"
 )
 
-var _ = dtov2.UserResponse{}; var _ = dtov2.V2BaseMasterItemResponse{}
+var _ = dtov2.UserResponse{}
+var _ = dtov2.V2BaseMasterItemResponse{}
 
 func NewUserHandler(userService *services.UserService, storageService *services.StorageService, verifyService *services.VerificationService, entitySvc services.EntityService) *UserHandler {
 	return &UserHandler{
@@ -217,7 +219,12 @@ func (h *UserHandler) VerifyFace(c *gin.Context) {
 		base.Error(c, http.StatusInternalServerError, "Failed to open photo", err.Error())
 		return
 	}
-	defer f.Close()
+
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("failed to close uploaded photo: %v", err)
+		}
+	}()
 
 	result, err := h.verifyService.VerifyFace(c.Request.Context(), userID, f)
 	if err != nil {
@@ -238,14 +245,4 @@ func (h *UserHandler) VerifyFace(c *gin.Context) {
 	}
 
 	base.OK(c, dtoResult)
-}
-
-func (h *UserHandler) parseUUIDs(strs []string) []uuid.UUID {
-	var uuids []uuid.UUID
-	for _, s := range strs {
-		if u, err := uuid.Parse(s); err == nil {
-			uuids = append(uuids, u)
-		}
-	}
-	return uuids
 }

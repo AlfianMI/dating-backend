@@ -23,18 +23,9 @@ type S3Storage struct {
 func NewS3Storage(accessKey, secretKey, endpoint, region, bucketName string) (*S3Storage, error) {
 	opts := []func(*config.LoadOptions) error{
 		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-	}
-
-	if endpoint != "" {
-		resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			return aws.Endpoint{
-				URL:               endpoint,
-				SigningRegion:     region,
-				HostnameImmutable: true,
-			}, nil
-		})
-		opts = append(opts, config.WithEndpointResolverWithOptions(resolver))
+		config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+		),
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(), opts...)
@@ -42,7 +33,12 @@ func NewS3Storage(accessKey, secretKey, endpoint, region, bucketName string) (*S
 		return nil, fmt.Errorf("unable to load SDK config: %v", err)
 	}
 
-	client := s3.NewFromConfig(cfg)
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if endpoint != "" {
+			o.BaseEndpoint = aws.String(endpoint)
+		}
+	})
+
 	presigner := s3.NewPresignClient(client)
 
 	return &S3Storage{

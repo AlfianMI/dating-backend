@@ -27,10 +27,12 @@ func (m *CacheMiddleware) Cache(ttl time.Duration) gin.HandlerFunc {
 		val, err := m.redis.Get(context.Background(), key).Result()
 		if err == nil {
 			var cachedResponse interface{}
-			json.Unmarshal([]byte(val), &cachedResponse)
-			c.JSON(http.StatusOK, cachedResponse)
-			c.Abort()
-			return
+
+			if unmarshalErr := json.Unmarshal([]byte(val), &cachedResponse); unmarshalErr == nil {
+				c.JSON(http.StatusOK, cachedResponse)
+				c.Abort()
+				return
+			}
 		}
 
 		// Custom writer to capture response

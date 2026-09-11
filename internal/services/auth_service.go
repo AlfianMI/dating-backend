@@ -27,9 +27,9 @@ func getRefreshTokenExpiry() time.Duration {
 }
 
 type AuthService struct {
-	repo           repository.UserRepository
-	sessionRepo    repository.SessionRepository
-	entityRepo     repository.EntityRepository
+	repo             repository.UserRepository
+	sessionRepo      repository.SessionRepository
+	entityRepo       repository.EntityRepository
 	storageService   *StorageService
 	promotionService PromotionService
 }
@@ -178,8 +178,6 @@ func (u *AuthService) generateTokensAndDevice(userID uuid.UUID, dto DeviceDTO) (
 	return accessToken, refreshTokenStr, nil
 }
 
-
-
 func (u *AuthService) LoginWithGoogle(dto GoogleLoginDTO) (string, string, *entities.User, error) {
 	// 1. Check if this Google account is already linked
 	user, err := u.repo.GetByProvider("google", dto.GoogleID)
@@ -275,9 +273,9 @@ func (u *AuthService) LoginWithGoogle(dto GoogleLoginDTO) (string, string, *enti
 	} else if dto.ProfilePicture != "" {
 		newUser.Photos = []entities.Photo{
 			{
-				UserID:    userID,
-				URL:       dto.ProfilePicture,
-				IsMain:    true,
+				UserID: userID,
+				URL:    dto.ProfilePicture,
+				IsMain: true,
 			},
 		}
 	}
@@ -355,20 +353,6 @@ func getInt(i *int) int {
 		return 0
 	}
 	return *i
-}
-
-func joinStrings(s *[]string) string {
-	if s == nil || len(*s) == 0 {
-		return ""
-	}
-	res := ""
-	for i, v := range *s {
-		if i > 0 {
-			res += ","
-		}
-		res += v
-	}
-	return res
 }
 
 func parseUUIDPtr(s *string) *uuid.UUID {

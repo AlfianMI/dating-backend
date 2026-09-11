@@ -68,12 +68,23 @@ type Client struct {
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
-		c.conn.Close()
+
+		if err := c.conn.Close(); err != nil {
+			log.Printf("[WebSocket] failed to close connection: %v", err)
+		}
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Printf("[WebSocket] failed to set read deadline: %v", err)
+		return
+	}
+
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+			log.Printf("[WebSocket] failed to refresh read deadline: %v", err)
+			return err
+		}
+
 		return nil
 	})
 
@@ -97,17 +108,37 @@ func (c *Client) readPump() {
 			var payload message.SendMessagePayload
 			payloadBytes, _ := json.Marshal(event.Payload)
 			if err := json.Unmarshal(payloadBytes, &payload); err == nil {
-				c.chatService.SendMessage(ctx, c.userID, *event.ConversationID, entities.MessageType(payload.MessageType), payload.Content, nil)
+				if err := c.chatService.SendMessage(
+					ctx,
+					c.userID,
+					*event.ConversationID,
+					entities.MessageType(payload.MessageType),
+					payload.Content,
+					nil,
+				); err != nil {
+					log.Printf("[WebSocket] failed to send message: %v", err)
+				}
 			}
 		case message.EventTypingStart:
-			c.chatService.SendTypingEvent(ctx, c.userID, *event.ConversationID, true)
+			if err := c.chatService.SendTypingEvent(ctx, c.userID, *event.ConversationID, true); err != nil {
+				log.Printf("[WebSocket] failed to send typing start event: %v", err)
+			}
 		case message.EventTypingStop:
-			c.chatService.SendTypingEvent(ctx, c.userID, *event.ConversationID, false)
+			if err := c.chatService.SendTypingEvent(ctx, c.userID, *event.ConversationID, false); err != nil {
+				log.Printf("[WebSocket] failed to send typing stop event: %v", err)
+			}
 		case message.EventMessageRead:
 			var payload message.ReadPayload
 			payloadBytes, _ := json.Marshal(event.Payload)
 			if err := json.Unmarshal(payloadBytes, &payload); err == nil {
-				c.chatService.SendReadReceipt(ctx, c.userID, *event.ConversationID, payload.MessageID)
+				if err := c.chatService.SendReadReceipt(
+					ctx,
+					c.userID,
+					*event.ConversationID,
+					payload.MessageID,
+				); err != nil {
+					log.Printf("[WebSocket] failed to send read receipt: %v", err)
+				}
 			}
 		}
 	}
@@ -118,27 +149,49 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+
+		if err := c.conn.Close(); err != nil {
+			log.Printf("[WebSocket] failed to close connection: %v", err)
+		}
 	}()
 
 	for {
 		select {
 		case msg, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				log.Printf("[WebSocket] failed to set write deadline: %v", err)
+				return
+			}
 			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
+					log.Printf("[WebSocket] failed to send close message: %v", err)
+				}
 				return
 			}
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				return
 			}
-			w.Write(msg)
+			if _, err := w.Write(msg); err != nil {
+				log.Printf("[WebSocket] failed to write message: %v", err)
+
+				if closeErr := w.Close(); closeErr != nil {
+					log.Printf("[WebSocket] failed to close writer: %v", closeErr)
+				}
+
+				return
+			}
+
 			if err := w.Close(); err != nil {
+				log.Printf("[WebSocket] failed to close writer: %v", err)
 				return
 			}
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				log.Printf("[WebSocket] failed to set write deadline: %v", err)
+				return
+			}
+
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
