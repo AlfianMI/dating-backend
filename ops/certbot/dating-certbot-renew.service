@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew Let's Encrypt certificate for dating-backend
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dating-certbot-renew.sh

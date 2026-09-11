@@ -81,6 +81,23 @@ jobs:
 
           mkdir -p "\$APP_DIR/certbot/www"
 
+          echo "Installing certificate renewal configuration..."
+
+          install -m 750 \
+            "\$SOURCE_DIR/ops/certbot/dating-certbot-renew.sh" \
+            /usr/local/sbin/dating-certbot-renew.sh
+
+          install -m 644 \
+            "\$SOURCE_DIR/ops/certbot/dating-certbot-renew.service" \
+            /etc/systemd/system/dating-certbot-renew.service
+
+          install -m 644 \
+            "\$SOURCE_DIR/ops/certbot/dating-certbot-renew.timer" \
+            /etc/systemd/system/dating-certbot-renew.timer
+
+          systemctl daemon-reload
+          systemctl enable --now dating-certbot-renew.timer
+
           echo "Logging in to ECR..."
           aws ecr get-login-password \
             --region "${AWS_REGION}" \
