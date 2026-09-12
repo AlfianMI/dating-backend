@@ -45,6 +45,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libgomp1 \
+    libpcre2-8-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Application binary
