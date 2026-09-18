@@ -11,9 +11,9 @@
 
 Dokumentasi teknis ini menjelaskan arsitektur backend, otomasi deployment, dan provisioning infrastruktur untuk project aplikasi dating app. Sistem dibangun menggunakan **Go** dengan pola **Clean Architecture**, di-deploy ke **AWS EC2** menggunakan **Docker Compose**, dan seluruh AWS resource dikelola secara deklaratif menggunakan **Terraform** pada region `ap-southeast-1` (Singapura).
 
-Project ini diorganisir ke dalam dua repository yang saling terintegrasi:
-1. **Application Repository (`dating-backend`)**: Berisi source code Go backend, multi-stage Dockerfile, konfigurasi Docker Compose production, reverse proxy Nginx, skrip otomatisasi perpanjangan sertifikat SSL Let's Encrypt, migration database SQL, dan workflow GitHub Actions CI/CD.
-2. **Infrastructure Repository (`dating-backend-infra`)**: Berisi modul-modul Terraform untuk provisioning seluruh AWS infrastructure (VPC, Public Subnet, Internet Gateway, Route Table, Security Group, IAM Role & OIDC Identity Provider, EC2 Instance, dan Amazon ECR).
+Project ini menerapkan prinsip **Separation of Concerns (SoC)** dengan memisahkan kode aplikasi dan infrastruktur ke dalam dua repository terpisah yang saling terintegrasi:
+1. **Application Repository (`dating-backend`)**: Berfokus pada siklus hidup aplikasi — mencakup source code Go backend (Clean Architecture), multi-stage Dockerfile, konfigurasi Docker Compose production, reverse proxy Nginx, skrip otomatisasi perpanjangan sertifikat SSL Let's Encrypt, skema migration database SQL, dan workflow CI/CD GitHub Actions.
+2. **Infrastructure Repository (`dating-backend-infra`)**: Berfokus pada provisioning dan pengelolaan seluruh cloud infrastructure AWS secara deklaratif via Terraform — mencakup VPC, Public Subnet, Internet Gateway, Route Table, Security Group, IAM Role & OIDC Identity Provider, EC2 Instance, Amazon ECR, serta dedicated S3 Bucket untuk Terraform Remote State storage. Pemisahan ini menjamin siklus rilis aplikasi independen dari perubahan arsitektur cloud.
 
 ---
 
@@ -93,8 +93,9 @@ Dari sudut pandang DevOps dan Cloud Infrastructure:
 | Komponen | Teknologi | Spesifikasi / Konfigurasi Aktual |
 | :--- | :--- | :--- |
 | **Cloud Provider** | Amazon Web Services (AWS) | Region `ap-southeast-1` (Singapura) |
-| **Infrastructure as Code** | Terraform | Versi `>= 1.5.0`, AWS Provider `~> 6.0` (8 custom modules) |
-| **Compute Engine** | Amazon EC2 | Instance type `t3.micro`, AMI Amazon Linux 2023, IMDSv2 Enforced |
+| **Infrastructure as Code** | Terraform | Versi `>= 1.5.0`, AWS Provider `~> 6.0` (9 custom modules, refactored root) |
+| **Remote State Storage** | Amazon S3 | Dedicated S3 Bucket, Versioning, SSE-AES256, State Locking (`use_lockfile = true`) |
+| **Compute Engine** | Amazon EC2 | Instance type `t3.micro`, Pinned AMI AL2023 (`ami-0c6b3b583f6e55a2f`), IMDSv2 Enforced |
 | **Container Registry** | Amazon ECR | Private repository `dating-backend`, Tag Immutability & Scan on Push |
 | **Remote Management** | AWS Systems Manager (SSM) | Eksekusi remote script via document `AWS-RunShellScript` |
 | **CI/CD Platform** | GitHub Actions | 7 sequential jobs dengan AWS OIDC authentication |
@@ -161,21 +162,34 @@ dating-backend/
 ### 2. Infrastructure Repository (`dating-backend-infra`)
 ```text
 dating-backend-infra/
-├── modules/
-│   ├── ec2/                             # Modul EC2 instance, AMI AL2023, IMDSv2, user data
-│   ├── ecr/                             # Modul ECR repository, immutability, lifecycle policy
-│   ├── iam/                             # Modul IAM roles (EC2 instance profile & GitHub OIDC)
-│   ├── internet_gateway/                # Modul AWS Internet Gateway
-│   ├── route_table/                     # Modul Public Route Table & Subnet association
-│   ├── security_group/                  # Modul Security Group rules (SSH, HTTP, HTTPS)
-│   ├── subnet/                          # Modul Public Subnet ap-southeast-1a
-│   └── vpc/                             # Modul AWS VPC (10.0.0.0/16) dengan DNS support
-├── main.tf                              # Root module penghubung seluruh modul Terraform
-├── variables.tf                         # Definisi input variables
+├── backend.tf                           # Konfigurasi S3 Remote State & State Locking (use_lockfile = true)
+├── ec2.tf                               # Pemanggilan modul EC2 (Pinned AMI & IMDSv2)
+├── ecr.tf                               # Pemanggilan modul ECR Private Repository
+├── iam.tf                               # Pemanggilan modul IAM Role & GitHub Actions OIDC
+├── internet_gateway.tf                  # Pemanggilan modul Internet Gateway
 ├── outputs.tf                           # Definisi output variables (IP publik, VPC ID, URL ECR)
-├── providers.tf                         # Konfigurasi AWS Provider dan versi Terraform
-├── terraform.tfvars                     # Nilai aktual variables environment
-└── terraform.tfvars.example             # Contoh pengisian variables
+├── providers.tf                         # Konfigurasi AWS Provider (~> 6.0) dan versi Terraform
+├── route_table.tf                       # Pemanggilan modul Route Table & Subnet Association
+├── security_group.tf                    # Pemanggilan modul Security Group
+├── subnet.tf                            # Pemanggilan modul Public Subnet
+├── variables.tf                         # Definisi input variables (termasuk sensitive ami_id)
+├── vpc.tf                               # Pemanggilan modul VPC
+│
+├── bootstrap/                           # Konfigurasi Terraform bootstrap terpisah untuk S3 state bucket
+│   ├── .terraform.lock.hcl
+│   ├── main.tf
+│   └── providers.tf
+│
+└── modules/
+    ├── ec2/                             # Modul EC2 instance, Pinned AMI AL2023, IMDSv2, user data
+    ├── ecr/                             # Modul ECR repository, immutability, lifecycle policy
+    ├── iam/                             # Modul IAM roles (EC2 instance profile & GitHub OIDC)
+    ├── internet_gateway/                # Modul AWS Internet Gateway
+    ├── route_table/                     # Modul Public Route Table & Subnet association
+    ├── s3/                              # Modul S3 Remote State Bucket (Versioning, SSE-AES256, Lock)
+    ├── security_group/                  # Modul Security Group rules (SSH, HTTP, HTTPS)
+    ├── subnet/                          # Modul Public Subnet ap-southeast-1a
+    └── vpc/                             # Modul AWS VPC (10.0.0.0/16) dengan DNS support
 ```
 
 ---
@@ -221,13 +235,24 @@ graph TD
 
 ## 6. AWS Infrastructure Architecture
 
-Infrastruktur cloud di-provision secara otomatis menggunakan 8 modul Terraform mandiri di region `ap-southeast-1`:
+Infrastruktur cloud di-provision secara otomatis menggunakan 9 modul Terraform mandiri di region `ap-southeast-1` dengan pemisahan repository antara aplikasi dan infrastruktur:
 
 ```mermaid
 graph TB
-    Internet(("Public Internet"))
+    subgraph Repos["Separation of Concerns: Dual Repository Architecture"]
+        subgraph InfraRepo["Infrastructure Repository: dating-backend-infra"]
+            TFConfig["Terraform Root Config<br/>(vpc.tf, subnet.tf, igw.tf, ec2.tf, dll)"]
+            TFBootstrap["Bootstrap Config<br/>(bootstrap/ & modules/s3)"]
+        end
+
+        subgraph AppRepo["Application Repository: dating-backend"]
+            AppSrc["Go Clean Architecture<br/>(cmd/, internal/, migrations/)"]
+            GHA["GitHub Actions CI/CD<br/>(Test, Lint, Trivy, Build, Deploy)"]
+        end
+    end
 
     subgraph AWSCloud["AWS Cloud: Region ap-southeast-1"]
+        S3State["Amazon S3: dating-backend-terraform-state<br/>(Remote State, Versioning, SSE-AES256, use_lockfile)"]
         ECR["Amazon ECR: dating-backend<br/>(Immutable Tags, Scan on Push: ON)"]
         SSM["AWS Systems Manager (SSM Agent)"]
 
@@ -258,17 +283,26 @@ graph TB
         end
     end
 
-    Internet -->|HTTP :80 & HTTPS :443| IGW
+    TFBootstrap -.->|1. Provision State Bucket| S3State
+    TFConfig -->|2. State Locking & Storage| S3State
+    TFConfig ==>|3. Provision & Manage Infrastructure| VPC
+    TFConfig ==>|Provision & Manage| ECR
+
+    AppSrc --> GHA
+    GHA -->|Push Docker Image| ECR
+    GHA -->|Trigger Deployment via SSM| SSM
+    SSM -->|Execute Deployment Commands| EC2
+    EC2 -->|Pull Image via Instance Profile| ECR
+
+    Internet(("Public Internet")) -->|HTTP :80 & HTTPS :443| IGW
     IGW --> NginxCont
     NginxCont --> AppCont
     AppCont --> DBCont
     AppCont --> RedisCont
     MigrateCont -.->|Runs Before App| DBCont
-    SSM -->|Execute Deployment Commands| EC2
-    EC2 -->|Pull Image via Instance Profile| ECR
 ```
 
-### Rincian 8 Modul Terraform
+### Rincian 9 Modul Terraform
 1. **`modules/vpc`**: Membuat VPC dengan CIDR `10.0.0.0/16`, mengaktifkan `enable_dns_support = true` dan `enable_dns_hostnames = true`.
 2. **`modules/subnet`**: Mengalokasikan public subnet dengan CIDR `10.0.1.0/24` di availability zone `ap-southeast-1a` dengan fitur `map_public_ip_on_launch = true`.
 3. **`modules/internet_gateway`**: Membuat Internet Gateway dan menghubungkannya ke VPC untuk akses internet publik.
@@ -280,10 +314,11 @@ graph TB
    - Egress: Terbuka penuh ke `0.0.0.0/0` untuk download package, image pull dari ECR, dan komunikasi outbound API.
    - **Port internal (8080, 5432, 6379) tidak dibuka sama sekali di tingkat Security Group AWS.**
 6. **`modules/iam`**:
-   - `aws_iam_role.ec2`: IAM Role untuk instance EC2 dengan managed policy `AmazonEC2ContainerRegistryReadOnly` (pull image ECR) dan `AmazonSSMManagedInstanceCore` (konektivitas agent SSM).
+   - `aws_iam_role.ec2`: IAM Role untuk instance EC2 dengan managed policy `AmazonEC2ContainerRegistryReadOnly` (pull image ECR) dan `AmazonSSMManagedInstanceCore` (konektivitas agent SSM). Output `instance_profile_name` dikonsumsi langsung oleh module EC2.
    - `aws_iam_role.github_actions`: IAM Role untuk GitHub Actions runner menggunakan OIDC federated principal (`arn:aws:iam::992382472679:oidc-provider/token.actions.githubusercontent.com`) dengan condition `sub` terikat spesifik ke repository `repo:AlfianMI@94944686/dating-backend@1359818628:ref:refs/heads/master`. Diberikan policy `AmazonEC2ContainerRegistryPowerUser` dan inline policy `ssm:SendCommand` serta `ssm:GetCommandInvocation`.
-7. **`modules/ec2`**: Menginisialisasi instance `t3.micro` dengan AMI Amazon Linux 2023 yang diperoleh dinamis via SSM Parameter `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64`, mewajibkan **IMDSv2** (`http_tokens = "required"`), serta menjalankan user data script untuk menginstal dan menjalankan Docker daemon.
+7. **`modules/ec2`**: Menginisialisasi instance `t3.micro` dengan explicit AMI ID `ami-0c6b3b583f6e55a2f` (Amazon Linux 2023) melalui variable `ami_id`. Penentuan AMI ID secara eksplisit (pinned) menggantikan parameter SSM dinamis `/aws/service/ami-amazon-linux-latest/...` guna mencegah replacement EC2 secara tidak sengaja ketika AWS merilis versi AMI baru. Modul tetap mewajibkan **IMDSv2** (`http_tokens = "required"`), mengaitkan IAM instance profile, serta menjalankan user data script untuk bootstrap Docker daemon.
 8. **`modules/ecr`**: Membuat private repository `dating-backend` dengan `image_tag_mutability = "IMMUTABLE"`, `scan_on_push = true`, serta lifecycle policy untuk mempertahankan maksimal 10 image terbaru.
+9. **`modules/s3`**: Membuat dedicated S3 bucket untuk Terraform Remote State dengan versioning aktif, enkripsi AES256 (*at rest*), public access block penuh, Object Ownership `BucketOwnerEnforced`, serta `force_destroy = false` untuk proteksi state.
 
 ---
 
@@ -841,13 +876,62 @@ curl -fsS http://127.0.0.1:8080/health
 
 ## 19. Infrastructure Repository
 
-Seluruh provisioning infrastruktur cloud dikelola secara deklaratif pada repository **`dating-backend-infra`**.
+Seluruh provisioning infrastruktur cloud dikelola secara deklaratif pada repository terpisah: **`dating-backend-infra`**.
 
-### Prasyarat
+Pemisahan repository ini menerapkan prinsip **Separation of Concerns**:
+- Repository `dating-backend` fokus pada application lifecycle, source code logic, database migration, containerization, dan CI/CD deployment pipeline.
+- Repository `dating-backend-infra` fokus murni pada cloud infrastructure provisioning, networking, IAM security policies, remote state management, serta lifecycle AWS resources via Terraform.
+
+### 1. Refactoring Root Module & Modular Architecture
+Root Terraform configuration pada `dating-backend-infra` telah direfaktor dari satu file monolith `main.tf` menjadi file deklarasi terpisah berdasarkan komponen/domain resource:
+- `vpc.tf` — memanggil `module.vpc`
+- `subnet.tf` — memanggil `module.subnet`
+- `internet_gateway.tf` — memanggil `module.internet_gateway`
+- `route_table.tf` — memanggil `module.route_table`
+- `security_group.tf` — memanggil `module.security_group`
+- `iam.tf` — memanggil `module.iam`
+- `ec2.tf` — memanggil `module.ec2`
+- `ecr.tf` — memanggil `module.ecr`
+
+> [!NOTE]
+> Terraform tetap memperlakukan seluruh file `.tf` dalam root directory sebagai satu kesatuan **root module**. Pemisahan ini murni untuk meningkatkan modularitas, keterbacaan (*readability*), dan pemeliharaan (*maintainability*) tanpa mengubah *execution graph*.
+
+### 2. Terraform Remote State & S3 Backend
+Terraform State kini disimpan secara terpusat pada Amazon S3 Remote State dengan konfigurasi pada `backend.tf`:
+```hcl
+terraform {
+  backend "s3" {
+    bucket       = "dating-backend-terraform-state-992382472679"
+    key          = "dating-backend/terraform.tfstate"
+    region       = "ap-southeast-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+```
+- **Tujuan Remote State & Locking**: Menjadikan state tersimpan secara terpusat sebagai *single source of truth* (bukan hanya tersimpan secara lokal), serta memanfaatkan fitur native state locking (`use_lockfile = true` via S3 conditional writes) untuk mencegah operasi konkuren simultan yang berpotensi merusak state file.
+
+### 3. Bootstrap Terraform Configuration & Migrasi State
+Repository infrastruktur memiliki konfigurasi bootstrap mandiri:
+- `bootstrap/` (konfigurasi Terraform independen untuk membuat S3 bucket)
+- `modules/s3/` (modul S3 dengan versioning aktif, SSE-AES256, public access block penuh, Object Ownership `BucketOwnerEnforced`, dan `force_destroy = false`)
+
+**Alur Provisioning & Migrasi**:
+```mermaid
+flowchart LR
+    A["1. Terraform Bootstrap<br/>(bootstrap/)"] -->|terraform apply| B["2. Create S3 State Bucket<br/>(modules/s3)"]
+    B --> C["3. Configure S3 Backend<br/>(backend.tf)"]
+    C -->|terraform init -migrate-state| D["4. Migrate Terraform State<br/>(Local to S3)"]
+    D --> E["5. Terraform Menggunakan<br/>S3 Remote State"]
+```
+
+> [!IMPORTANT]
+> State lokal sebelumnya telah dimigrasikan ke S3 Remote State. Seluruh resource AWS eksisting (VPC, Subnet, Route Table, IGW, Security Group, IAM Role/Profile, EC2 Instance, dan ECR) **tetap dipertahankan dan tidak dibuat ulang**.
+
+### 4. Prasyarat & Setup
 - Terraform versi `>= 1.5.0`
 - AWS CLI terotentikasi dengan hak akses administrator pada AWS account target
 
-### Setup & Inisialisasi
 1. **Clone Repository**:
    ```bash
    git clone https://github.com/AlfianMI/dating-backend-infra.git
@@ -860,35 +944,39 @@ Seluruh provisioning infrastruktur cloud dikelola secara deklaratif pada reposit
    ```
    Lengkapi nilai variable pada `terraform.tfvars`:
    ```hcl
-   aws_region            = "ap-southeast-1"
-   project_name          = "dating-backend"
-   vpc_cidr              = "10.0.0.0/16"
-   public_subnet_cidr    = "10.0.1.0/24"
-   availability_zone     = "ap-southeast-1a"
-   instance_type         = "t3.micro"
-   ami_ssm_parameter     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-   ssh_allowed_cidr      = "<ADMIN_PUBLIC_IP>/32"
-   aws_account_id        = "992382472679"
-   instance_profile_name = "ec2-ecr-pull-role"
-   key_name              = "<KEY_PAIR_NAME>"
+   aws_region         = "ap-southeast-1"
+   project_name       = "dating-backend"
+   vpc_cidr           = "10.0.0.0/16"
+   public_subnet_cidr = "10.0.1.0/24"
+   availability_zone  = "ap-southeast-1a"
+   instance_type      = "t3.micro"
+   ssh_allowed_cidr   = "<ADMIN_PUBLIC_IP>/32"
+   aws_account_id     = "992382472679"
+   ami_id             = "ami-0c6b3b583f6e55a2f"
    ```
+   > [!NOTE]
+   > Parameter `ami_id` menggunakan explicit AMI ID pinned (`ami-0c6b3b583f6e55a2f` Amazon Linux 2023) untuk mencegah Terraform merencanakan *unintended replacement* pada instance EC2 ketika AWS merilis versi baru dari dynamic parameter `amazon-linux-latest`.
 
-### Siklus Eksekusi Terraform
+### 5. Siklus Eksekusi & Status Verifikasi Terraform
 ```bash
-# Inisialisasi provider AWS dan modul lokal
-terraform init
+# Format check rekursif ke seluruh file
+terraform fmt -check -recursive
 
-# Validasi sintaksis konfigurasi
+# Validasi sintaksis dan modul
 terraform validate
 
-# Review rencana pembuatan resources
-terraform plan -out=tfplan
-
-# Provisioning resources ke AWS
-terraform apply tfplan
+# Review rencana perubahan infrastruktur
+terraform plan
 ```
 
-### Outputs Infrastruktur
+**Hasil Verifikasi Terakhir**:
+- `terraform fmt -check -recursive` → **PASS**
+- `terraform validate` → **PASS**
+- `terraform plan` → **`No changes. Your infrastructure matches the configuration.`**
+
+Hasil ini mengonfirmasi bahwa konfigurasi Terraform saat ini sudah cocok (*match*) 100% dengan kondisi riil infrastruktur AWS yang aktif tanpa ada *drift*.
+
+### 6. Outputs Infrastruktur
 Setelah proses apply selesai, Terraform menyediakan outputs untuk keperluan deployment:
 - `vpc_id`: ID VPC yang dibuat.
 - `subnet_id`: ID Public Subnet.
@@ -903,7 +991,7 @@ Setelah proses apply selesai, Terraform menyediakan outputs untuk keperluan depl
 
 Implementasi arsitektur DevOps dan backend ini telah memenuhi seluruh kriteria kesiapan production:
 
-- [x] **Modular Infrastructure as Code**: Seluruh komponen AWS (VPC, Subnet, IGW, Route Table, Security Group, IAM Role, EC2, ECR) dikelola secara otomatis via Terraform.
+- [x] **Modular Infrastructure as Code & S3 Remote State**: Seluruh komponen AWS (VPC, Subnet, IGW, Route Table, Security Group, IAM Role, EC2, ECR, S3 State Bucket) dikelola deklaratif via 9 modul Terraform dengan S3 Remote State & state locking aktif.
 - [x] **Multi-Stage Containerization**: Container aplikasi backend Go dibangun dengan strategi multi-stage build, CGO ONNX runtime support, dan user non-root `10001`.
 - [x] **Zero-Key CI/CD**: Autentikasi GitHub Actions ke AWS menggunakan protokol OIDC tanpa penyimpanan long-lived access keys.
 - [x] **Automated Security Gates**: Pipeline otomatis menghentikan build jika ditemukan kerentanan `HIGH` atau `CRITICAL` via Aqua Security Trivy (filesystem & container image scan).
